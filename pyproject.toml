@@ -1,0 +1,16 @@
+[project]
+name = "opencode-context-lens"
+version = "0.1.0"
+description = "A live, local context dashboard for OpenCode V2"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "PyYAML>=6,<7", "tiktoken>=0.9,<1"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110

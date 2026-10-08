@@ -1,0 +1,11 @@
+# Executable, bin directory, or installation directory. Null uses PATH,
+# then ~/.opencode/bin/opencode. Relative paths resolve beside this file.
+opencode_path: null
+
+# Optional explicit OpenCode server; otherwise use its managed local service.
+opencode_server: null
+
+host: 127.0.0.1
+port: 8765
+refresh_seconds: 5
+request_timeout_seconds: 30

@@ -1,0 +1,32 @@
+# Local configuration (use settings.example.yaml as a template)
+settings.yaml
+.env
+.env.*
+!.env.example
+
+# Python environments, bytecode, and packaging
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tests, linters, and coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor, OS, and runtime files
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.log

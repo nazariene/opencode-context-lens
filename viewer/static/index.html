@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1118">
+  <title>Context Lens · OpenCode</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%230d1118'/%3E%3Ccircle cx='20' cy='20' r='11' fill='none' stroke='%2345d4ba' stroke-width='5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Context Lens home"><span class="brand-icon">◉</span><span>Context Lens<small>OPENCODE OBSERVATORY</small></span></a>
+    <div class="sidebar-heading"><span>SESSIONS</span><span id="session-count" class="count">—</span></div>
+    <label class="search session-search"><span aria-hidden="true">⌕</span><input id="session-search" type="search" placeholder="Find a session…" aria-label="Search sessions"></label>
+    <div id="sessions" class="sessions" aria-label="Sessions"><p class="muted loading">Connecting to OpenCode…</p></div>
+    <button id="load-more" class="load-more" hidden>Load more sessions</button>
+    <div class="sidebar-footer"><span class="connection"><i id="connection-dot" class="dot"></i><span id="connection-label">Connecting</span></span><button id="settings-open" class="icon-button" aria-label="Connection settings" title="Connection settings">⚙</button></div>
+  </aside>
+
+  <main>
+    <header class="topbar"><div class="breadcrumb">OpenCode <span>/</span> Session context</div><div class="toolbar"><span id="updated" class="muted">Awaiting snapshot</span><button id="live" class="live-button" aria-pressed="true"><i class="dot"></i><span>Live</span></button><button id="refresh" class="icon-button" title="Refresh now" aria-label="Refresh now">↻</button></div></header>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div id="welcome" class="welcome"><div class="loader"></div><h1>Your context, in focus.</h1><p>Loading sessions from your OpenCode service.</p></div>
+
+    <div id="dashboard" hidden>
+      <section class="page-heading"><div><div class="eyebrow">CONTEXT EXPLORER</div><h1 id="session-title"></h1><div class="session-meta"><span id="model-name" class="model-chip"></span><span id="session-directory"></span></div><div id="session-id" class="technical"></div></div><span class="read-only">◌ Read-only view</span></section>
+
+      <section class="metrics" aria-label="Context metrics">
+        <article class="metric primary"><div class="metric-label">Visible context <span class="badge">ESTIMATED</span></div><div class="metric-value" id="visible-tokens">—</div><div class="metric-foot"><span id="visible-window">—</span><span>tokens</span></div><div class="capacity-track"><div id="visible-bar"></div></div></article>
+        <article class="metric"><div class="metric-label">Last request input <span class="badge reported">REPORTED</span></div><div class="metric-value" id="reported-tokens">—</div><div class="metric-foot" id="reported-caption">No completed request yet</div><div class="tiny" id="reported-cache"></div></article>
+        <article class="metric"><div class="metric-label">Model context window</div><div class="metric-value" id="window-tokens">—</div><div class="metric-foot">Maximum context · tokens</div><div class="tiny" id="input-limit"></div></article>
+        <article class="metric"><div class="metric-label">Inspectable parts</div><div class="metric-value" id="part-count">—</div><div class="metric-foot" id="message-count"></div><div class="tiny" id="unknown-count"></div></article>
+      </section>
+
+      <section class="panel composition"><div class="section-title"><div><h2>What’s in context</h2><p>Visible text by category. Select a category to explore.</p></div><button id="clear-filter" class="text-button" hidden>Clear filter ×</button></div><div id="composition-bar" class="composition-bar" aria-label="Context composition"></div><div id="categories" class="categories"></div><p class="tiny">API-visible text only. Base prompts, tool definitions and hidden reasoning are not fully itemized.</p></section>
+
+      <section class="panel parts-panel"><div class="section-title"><div><h2>Context inventory <span id="filtered-count" class="count"></span></h2><p>Active messages after the latest compaction.</p></div><div class="inventory-controls"><label class="search"><span aria-hidden="true">⌕</span><input id="part-search" type="search" placeholder="Filter visible previews…" aria-label="Filter context parts by title or preview"></label><select id="sort" aria-label="Sort context parts"><option value="largest">Largest first</option><option value="oldest">Context order</option><option value="newest">Newest first</option></select></div></div>
+        <div class="inventory-scroll"><table><thead><tr><th>CONTEXT PART</th><th>SIZE <span title="Estimated tokens">≈</span></th><th>% VISIBLE</th><th>% WINDOW</th><th></th></tr></thead><tbody id="parts"></tbody></table></div><div id="parts-empty" class="empty" hidden>No parts match this filter.</div><button id="more-parts" class="load-more" hidden>Show more parts</button>
+      </section>
+
+      <details class="method"><summary>How these numbers are measured <span id="tokenizer"></span></summary><div><p id="scope"></p><p>Each text part is tokenized independently. Per-part percentages use the sum of visible text estimates; window percentages use the selected model’s full context limit. These estimates exclude message wrappers and are not provider-exact.</p><p>Reported input is the latest completed assistant request’s uncached input + cache reads + cache writes. It includes provider-counted overhead, but precedes that reply and subsequent tool results. It is not cumulative session usage and need not equal the visible estimate.</p><p id="model-warning"></p><p id="excluded"></p></div></details>
+      <footer class="page-footer"><span>LOCAL SESSION INTELLIGENCE</span><span>OpenCode V2 · Context Lens</span></footer>
+    </div>
+  </main>
+
+  <dialog id="inspector" class="inspector"><div class="inspector-header"><div><div id="detail-category" class="eyebrow"></div><h2 id="detail-title">Context part</h2></div><button id="detail-close" class="icon-button" aria-label="Close inspector">×</button></div><div class="detail-stats" id="detail-stats"></div><div id="detail-id" class="technical"></div><p id="detail-note" class="detail-note" hidden></p><div class="content-toolbar"><span>CONTENT</span><button id="copy" class="text-button">Copy text</button></div><pre id="detail-text" tabindex="0"></pre></dialog>
+  <dialog id="settings-dialog" class="settings-dialog"><div class="inspector-header"><h2>Connection settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings">×</button></div><p>Configure <code>settings.yaml</code> and restart the dashboard to apply changes.</p><dl><dt>OpenCode executable</dt><dd id="setting-path"></dd><dt>OpenCode service</dt><dd id="setting-server"></dd><dt>Refresh interval</dt><dd id="setting-refresh"></dd></dl><p class="muted">With no path configured, the dashboard looks on PATH, then in <code>~/.opencode/bin/opencode</code>.</p></dialog>
+</body>
+</html>
