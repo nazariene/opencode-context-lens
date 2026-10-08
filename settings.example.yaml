@@ -6,6 +6,6 @@ opencode_path: null
 opencode_server: null
 
 host: 127.0.0.1
-port: 8765
+port: 9193
 refresh_seconds: 5
 request_timeout_seconds: 30

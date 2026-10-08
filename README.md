@@ -16,7 +16,10 @@ Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and OpenCode V2.
 The script installs dependencies through `uv` and starts the server. It also works
 when invoked from another directory.
 
-Open **http://127.0.0.1:8765**. The dashboard reads OpenCode through its authenticated
+Open **http://127.0.0.1:9193**. The port defaults to **9193** and is configurable via
+`port` in `settings.yaml`; restart the server after changing it.
+
+The dashboard reads OpenCode through its authenticated
 `opencode api` command, using the same managed service as the CLI. OpenCode may start
 its service automatically. The viewer does not modify sessions or read the database.
 
@@ -29,7 +32,7 @@ Local settings are ignored by Git; defaults apply when the file is absent.
 opencode_path: null                  # PATH, then ~/.opencode/bin/opencode
 opencode_server: null                # Optional explicit HTTP(S) server
 host: 127.0.0.1
-port: 8765
+port: 9193                          # Configurable dashboard port
 refresh_seconds: 5
 request_timeout_seconds: 30
 ```

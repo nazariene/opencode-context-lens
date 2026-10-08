@@ -11,7 +11,7 @@ class Settings:
     opencode_path: str | None = None
     opencode_server: str | None = None
     host: str = "127.0.0.1"
-    port: int = 8765
+    port: int = 9193
     refresh_seconds: float = 5
     request_timeout_seconds: float = 30
 
