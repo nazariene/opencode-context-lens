@@ -5,6 +5,10 @@ estimated tokens and percentages, provider-reported request usage, session searc
 category filtering, and a full-text inspector. Refreshes automatically; polling can
 be paused. Session links can be bookmarked.
 
+![OpenCode Context Lens showing session switching, token usage, and a context breakdown](docs/images/dashboard-example.png)
+
+*Example interface with entirely fictional sessions, paths, and message content.*
+
 ## Run
 
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and OpenCode V2.
