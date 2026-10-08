@@ -1,18 +1,54 @@
 import asyncio
+import logging
 import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
+from .analysis import InvalidSelection, build_analysis, preview_selection
 from .client import OpenCodeClient, OpenCodeError
 from .context import TokenCounter, build_context
 from .settings import Settings
 
 STATIC = Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
+
+
+class PreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    unit_ids: list[Annotated[str, StringConstraints(min_length=1)]]
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    context: dict
+    analysis: dict | None
+
+
+def build_snapshot(session, messages, model, counter, previous=None):
+    provenance = {}
+    context = build_context(session, messages, model, counter, provenance)
+    if previous and previous.context["revision"] == context["revision"] and previous.analysis is not None:
+        return Snapshot(context, previous.analysis)
+    try:
+        analysis = build_analysis(context, provenance)
+    except Exception:
+        logger.exception("Context analysis unavailable")
+        analysis = None
+    return Snapshot(context, analysis)
+
+
+def validate_session_id(session_id):
+    if not session_id.startswith("ses") or not session_id.replace("_", "").isalnum():
+        raise HTTPException(400, "Invalid session ID")
 
 
 def create_app(settings: Settings, client=None, counter=None):
@@ -88,32 +124,60 @@ def create_app(settings: Settings, client=None, counter=None):
                           and model["providerID"] == reference.get("providerID")), None)
             if not model and not warning:
                 warning = "No matching model limit is available; context-window percentages are unknown."
-            context = await asyncio.to_thread(build_context, session, context_response["data"], model, app.state.counter)
+            record = await asyncio.to_thread(build_snapshot, session, context_response["data"], model,
+                                             app.state.counter, cached[1] if cached else None)
+            context = record.context
             context["warning"] = warning
             context["fetched_at"] = int(time.time() * 1000)
-            snapshots[session_id] = (time.monotonic(), context)
+            snapshots[session_id] = (time.monotonic(), record)
             snapshots.move_to_end(session_id)
             if len(snapshots) > 8:
                 snapshots.popitem(last=False)
-            return context
+            return record
 
     @app.get("/api/sessions/{session_id}/context")
     async def context(session_id: str):
-        if not session_id.startswith("ses") or not session_id.replace("_", "").isalnum():
-            raise HTTPException(400, "Invalid session ID")
-        context = await snapshot(session_id)
+        validate_session_id(session_id)
+        context = (await snapshot(session_id)).context
         return dict(context, parts=[{key: value for key, value in part.items() if key != "text"}
                                     for part in context["parts"]])
 
     @app.get("/api/sessions/{session_id}/part")
     async def part(session_id: str, id: str = Query(), revision: str = Query()):
         cached = snapshots.get(session_id)
-        if not cached or cached[1]["revision"] != revision:
+        if not cached or cached[1].context["revision"] != revision:
             raise HTTPException(409, "Context changed. Refresh to inspect the latest version.")
-        selected = next((part for part in cached[1]["parts"] if part["id"] == id), None)
+        selected = next((part for part in cached[1].context["parts"] if part["id"] == id), None)
         if not selected:
             raise HTTPException(404, "Context part not found")
         return selected
+
+    def retained_analysis(session_id, revision):
+        validate_session_id(session_id)
+        cached = snapshots.get(session_id)
+        if not cached or cached[1].context["revision"] != revision:
+            raise HTTPException(409, {"code": "snapshot_changed",
+                                     "message": "This snapshot is no longer available. Refresh context and reselect."})
+        if cached[1].analysis is None:
+            raise HTTPException(500, {"code": "analysis_unavailable",
+                                     "message": "Analysis is unavailable for this snapshot. Refresh to retry."})
+        return cached[1]
+
+    @app.get("/api/sessions/{session_id}/analysis")
+    async def analysis(session_id: str, revision: str = Query(min_length=1, max_length=128)):
+        return retained_analysis(session_id, revision).analysis
+
+    @app.post("/api/sessions/{session_id}/cleanup-preview")
+    async def cleanup_preview(session_id: str, selection: PreviewRequest):
+        record = retained_analysis(session_id, selection.revision)
+        try:
+            return await asyncio.to_thread(preview_selection, record.context, record.analysis, selection.unit_ids)
+        except InvalidSelection as error:
+            raise HTTPException(422, error.detail) from error
+        except Exception as error:
+            logger.exception("Context preview unavailable")
+            raise HTTPException(500, {"code": "analysis_unavailable",
+                                     "message": "The preview could not be calculated. Refresh and retry."}) from error
 
     @app.get("/")
     async def index():

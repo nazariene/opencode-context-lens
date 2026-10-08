@@ -19,6 +19,8 @@ CATEGORIES = {
     "other": ("Other context", "#b6c3d2"),
 }
 
+ANALYSIS_RULESET = "context-analysis-v1"
+
 
 class TokenCounter:
     def __init__(self):
@@ -47,10 +49,15 @@ def percentage(value: int, total: int | None):
     return round(value / total * 100, 2) if total else None
 
 
-def build_context(session: dict, messages: list[dict], model: dict | None, counter: TokenCounter) -> dict:
+def build_context(session: dict, messages: list[dict], model: dict | None, counter: TokenCounter,
+                  provenance: dict | None = None) -> dict:
     parts = []
     excluded = Counter()
     opaque = 0
+    provenance = provenance if provenance is not None else {}
+    provenance.update(units=[], part_turns={}, turns={"retained-context": "Retained context"})
+    turn_id = "retained-context"
+    turn_number = 0
 
     def add(message, suffix, category, title, text, note=None, unknown=False):
         if not text and not unknown:
@@ -64,6 +71,7 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
             "created": message.get("time", {}).get("created"),
             "preview": " ".join(text[:400].split())[:220],
         })
+        provenance["part_turns"][parts[-1]["id"]] = turn_id
 
     def attachment(message, suffix, file):
         label = file.get("name") or file.get("filename") or file.get("mime") or "Attachment"
@@ -74,6 +82,11 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
 
     for message in messages:
         kind = message.get("type", "unknown")
+        if kind == "user":
+            turn_number += 1
+            turn_id = message["id"]
+            preview = " ".join((message.get("text") or "")[:160].split())[:80]
+            provenance["turns"][turn_id] = f"Turn {turn_number} · {preview or 'User message'}"
         if kind in ("agent-switched", "model-switched", "location-switched", "idle"):
             excluded[kind] += 1
             continue
@@ -90,11 +103,13 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
                         content.get("text"), "Encrypted reasoning is not included in this text estimate." if hidden else None,
                         unknown=hidden and not content.get("text"))
                 elif content_type == "tool":
+                    start = len(parts)
                     state = content.get("state") or {}
                     name = content.get("name", "Tool")
                     tool_input = state.get("input", {})
                     add(message, suffix + ":call", "calls", f"{name} · input", serialized(tool_input),
                         f"Status: {state.get('status', 'unknown')}")
+                    input_ids = [part["id"] for part in parts[start:]]
                     category = "skills" if name.split(".")[-1] == "skill" else "tools"
                     for result_index, output in enumerate(state.get("content", [])):
                         result_suffix = f"{suffix}:result:{result_index}"
@@ -107,6 +122,13 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
                                 "Unsupported tool content format", unknown=True)
                     if state.get("error"):
                         add(message, suffix + ":error", "tools", f"{name} · error", serialized(state["error"]))
+                    provenance["units"].append({
+                        "id": f"{message['id']}:{suffix}", "tool_name": name,
+                        "status": state.get("status") or "unknown", "input": tool_input,
+                        "part_ids": [part["id"] for part in parts[start:]], "input_ids": input_ids,
+                        "result_ids": [part["id"] for part in parts[start + len(input_ids):]],
+                        "turn_id": turn_id,
+                    })
                 else:
                     add(message, suffix, "other", f"Unknown assistant part: {content_type}",
                         "Unsupported content format", unknown=True)
@@ -133,6 +155,8 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
 
     total = sum(part["tokens"] or 0 for part in parts)
     limit = (model or {}).get("limit", {}).get("context") or None
+    if limit is not None and limit <= 0:
+        limit = None
     categories = []
     for key, (label, color) in CATEGORIES.items():
         selected = [part for part in parts if part["category"] == key]
@@ -164,7 +188,11 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
                     "percent": percentage(input_tokens, limit) if same_model else None,
                     "message_id": latest["id"], "model": model_ref, "same_model": same_model,
                     "completed": latest["time"]["completed"]}
-    revision = hashlib.sha256(serialized(parts).encode()).hexdigest()[:16]
+    revision_input = {
+        "parts": [{key: value for key, value in part.items() if key != "created"} for part in parts],
+        "provenance": provenance, "ruleset": ANALYSIS_RULESET, "tokenizer": counter.method, "window": limit,
+    }
+    revision = hashlib.sha256(serialized(revision_input).encode()).hexdigest()[:16]
     return {
         "session": {key: session[key] for key in ("id", "title", "location", "model", "time", "parentID") if key in session},
         "model": {key: model[key] for key in ("id", "providerID", "name", "limit") if key in model} if model else None,

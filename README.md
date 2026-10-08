@@ -2,8 +2,9 @@
 
 A local, interactive dashboard for **OpenCode V2** sessions: active context parts,
 estimated tokens and percentages, provider-reported request usage, session search,
-category filtering, and a full-text inspector. Refreshes automatically; polling can
-be paused. Session links can be bookmarked.
+category filtering, grouped inventory, waste signals, hypothetical cleanup previews,
+and a full-text inspector. Refreshes automatically; polling can be paused. Session
+links can be bookmarked.
 
 ![OpenCode Context Lens showing session switching, token usage, and a context breakdown](docs/images/dashboard-example.png)
 
@@ -67,9 +68,39 @@ Context summaries are cached for one refresh interval, for up to eight sessions.
 Full part content is loaded into the browser only when inspected. An open inspector
 keeps its original snapshot while monitoring continues.
 
+## Reviewing context
+
+- Switch the inventory between **flat**, **tool**, **resource**, and **retained turn**
+  views. Expand groups to inspect members. Filters adjust group totals; percentages
+  still use the full snapshot. Resource groups use literal declared paths.
+- **Review opportunities** flags exact repeated results, reads with identical
+  arguments, and results of at least 4,096 estimated tokens. Open the evidence to
+  compare occurrences. Repeated reads may contain changed content; a finding does
+  not prove that content is unnecessary.
+- Select a finding or inventory member to include its **complete tool invocation**,
+  including paired parts hidden by filters. Group selection skips ineligible units.
+  Failed, unfinished, instruction-bearing, and unknown-size units explain why they
+  cannot enter a numeric preview.
+- **Cleanup preview** shows unique selected tokens and estimated remaining visible
+  context. Overlapping selections count once. It is hypothetical: no context changes,
+  and reported provider usage remains unchanged. Unmeasured content stays disclosed.
+- Same-revision refreshes preserve selection. A changed snapshot or session clears it.
+  Pause live updates to review a snapshot; if it is evicted from cache, refresh and
+  reselect. Selections are not saved across browser reloads.
+
+Context diff, timelines, pinning, summary replacement, and actual cleanup are later
+features.
+
 ## Checks
 
 ```sh
 uv run pytest
 uv run ruff check .
+node --check viewer/static/app.js
+```
+
+Synthetic end-to-end checks (requires Chrome; never connects to OpenCode):
+
+```sh
+uv run --with playwright python tests/browser_analysis_check.py
 ```

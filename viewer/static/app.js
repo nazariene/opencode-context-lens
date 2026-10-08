@@ -2,7 +2,14 @@ const $ = (id) => document.getElementById(id);
 const number = (value) => value == null ? '—' : new Intl.NumberFormat().format(value);
 const percent = (value) => value == null ? '—' : `${value.toFixed(value > 0 && value < 1 ? 2 : 1)}%`;
 const state = { sessions: [], session: null, context: null, category: null, live: true, interval: 5000,
-  next: null, sessionRequest: 0, contextRequest: 0, detailRequest: 0, rows: 80, timer: null, detail: null };
+  next: null, sessionRequest: 0, contextRequest: 0, detailRequest: 0, rows: 80, timer: null, detail: null,
+  analysis: null, analysisRequest: 0, analysisLoading: false, analysisError: '', partsById: new Map(),
+  unitsById: new Map(), partUnits: new Map(), expanded: new Set(), evidenceExpanded: new Set(), findingRows: 80,
+  selected: new Set(), selectionNotice: '', preview: null, previewRequest: 0, previewLoading: false, previewError: '' };
+
+const blockedLabels = { 'instruction-content': 'Instruction or skill content', failed: 'Failed call',
+  incomplete: 'Unfinished call', 'missing-result': 'Missing input or result', 'unknown-size': 'Unknown token size' };
+const ruleLabels = { 'duplicate-result': 'Exact duplicate', 'repeated-read': 'Repeated read', 'large-result': 'Large result' };
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -11,10 +18,17 @@ function element(tag, className, text) {
   return node;
 }
 
-async function api(path) {
-  const response = await fetch(path, { cache: 'no-store' });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
+async function api(path, options = {}) {
+  const response = await fetch(path, { cache: 'no-store', ...options });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = body.detail;
+    const message = typeof detail === 'string' ? detail : Array.isArray(detail)
+      ? detail.map((error) => error.msg).join('; ') : detail?.message;
+    const error = new Error(message || `Request failed (${response.status})`);
+    error.code = detail?.code;
+    throw error;
+  }
   return body;
 }
 
@@ -84,6 +98,8 @@ async function loadSessions(append = false, retain = false) {
 }
 
 async function selectSession(id) {
+  if (id === state.session && state.context) return;
+  resetAnalysis(state.session && id !== state.session ? 'Session changed. Selection cleared.' : '');
   state.session = id;
   state.context = null;
   state.category = null;
@@ -118,7 +134,9 @@ async function loadContext() {
   }
   if (session !== state.session || request !== state.contextRequest) return;
   const changed = context.revision !== state.context?.revision;
+  if (changed) resetAnalysis(state.context ? 'Snapshot changed. Selection cleared; review the new context.' : state.selectionNotice);
   state.context = context;
+  state.partsById = new Map(context.parts.map((part) => [part.id, part]));
   connected();
   $('welcome').hidden = true;
   $('dashboard').hidden = false;
@@ -132,6 +150,7 @@ async function loadContext() {
       $('detail-note').textContent = 'Context has updated. This inspector shows the snapshot you opened; reopen the part for its latest content.';
     }
   }
+  if (!state.analysis && !state.analysisLoading) await loadAnalysis();
 }
 
 function renderMetrics() {
@@ -158,6 +177,7 @@ function renderMetrics() {
   $('reported-cache').textContent = reported ? `${number(reported.cache_read)} cached · ${number(reported.output)} output tokens` : 'Provider usage will appear after a reply';
   $('reported-cache').title = reported ? `Uncached input: ${number(reported.uncached_input)}; cache read: ${number(reported.cache_read)}; cache write: ${number(reported.cache_write)}; reasoning: ${number(reported.reasoning)}. Request [${reported.message_id}]` : '';
   $('updated').textContent = `Updated ${new Date(context.fetched_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+  $('snapshot-age').textContent = `${state.live ? 'Displayed snapshot' : 'Paused snapshot'} · ${new Date(context.fetched_at).toLocaleString()} · ${timeAgo(context.fetched_at)}`;
   $('tokenizer').textContent = context.tokenizer;
   $('scope').textContent = context.scope;
   $('model-warning').textContent = context.warning || '';
@@ -204,44 +224,309 @@ function renderCategories() {
   $('clear-filter').hidden = !state.category;
 }
 
+function matchingParts() {
+  const query = $('part-search').value.trim().toLowerCase();
+  return state.context.parts.filter((part) => (!state.category || part.category === state.category)
+    && (!query || `${part.title} ${part.preview}`.toLowerCase().includes(query)));
+}
+
+function sortParts(parts) {
+  const sort = $('sort').value;
+  return parts.sort((a, b) => sort === 'largest' ? (b.tokens ?? -1) - (a.tokens ?? -1) || a.order - b.order
+    : sort === 'newest' ? b.order - a.order : a.order - b.order);
+}
+
+function unitCheckbox(unit, id, label) {
+  const wrapper = element('label', 'unit-select');
+  const checkbox = element('input');
+  checkbox.type = 'checkbox';
+  checkbox.id = id;
+  checkbox.disabled = !unit?.eligible;
+  checkbox.checked = !!unit && state.selected.has(unit.id);
+  checkbox.setAttribute('aria-label', `Select ${label}`);
+  wrapper.title = unit ? (unit.eligible ? `Complete tool invocation [${unit.id}]` : blockedLabels[unit.blocked_reason]) : 'Not a selectable tool invocation';
+  checkbox.addEventListener('change', () => changeSelection([unit.id], checkbox.checked));
+  wrapper.append(checkbox);
+  return wrapper;
+}
+
+function partRow(part, grouped = false) {
+  const category = state.context.categories.find((category) => category.id === part.category);
+  const unit = state.partUnits.get(part.id);
+  const row = element('tr', `part-row${grouped ? ' group-members' : ''}${unit && state.selected.has(unit.id) ? ' is-selected' : ''}`);
+  row.dataset.partId = part.id;
+  const label = element('td');
+  const content = element('div', 'part-label');
+  if (state.analysis) content.append(unitCheckbox(unit, `select-part:${part.id}`, part.title));
+  const open = element('button', 'part-open');
+  open.setAttribute('aria-label', `Inspect ${part.title}`);
+  open.title = `[${part.id}]`;
+  const title = element('div', 'part-title');
+  const swatch = element('span', 'swatch');
+  swatch.style.backgroundColor = category.color;
+  title.append(swatch, element('span', '', part.title));
+  open.append(title, element('div', 'part-preview', part.preview || part.note || 'No readable text'));
+  if (unit && !unit.eligible) open.append(element('div', 'blocked-reason', blockedLabels[unit.blocked_reason]));
+  open.addEventListener('click', () => inspect(part));
+  content.append(open); label.append(content);
+  const size = element('td', 'part-size', part.tokens == null ? 'Unknown' : `≈ ${number(part.tokens)}`);
+  const meter = element('div', 'size-meter');
+  const fill = element('span');
+  const max = Math.max(1, ...state.context.categories.map((category) => category.tokens));
+  fill.style.width = `${Math.min(100, (part.tokens || 0) / max * 100)}%`;
+  fill.style.backgroundColor = category.color;
+  meter.append(fill); size.append(meter);
+  const arrow = element('td', 'part-arrow', '›');
+  arrow.setAttribute('aria-hidden', 'true');
+  row.append(label, size, element('td', '', percent(part.percent)), element('td', '', percent(part.window_percent)), arrow);
+  return row;
+}
+
 function renderParts() {
   if (!state.context) return;
-  const query = $('part-search').value.trim().toLowerCase();
-  let parts = state.context.parts.filter((part) => (!state.category || part.category === state.category)
-    && (!query || `${part.title} ${part.preview}`.toLowerCase().includes(query)));
-  const sort = $('sort').value;
-  parts.sort((a, b) => sort === 'largest' ? (b.tokens ?? -1) - (a.tokens ?? -1) : sort === 'newest' ? b.order - a.order : a.order - b.order);
+  const parts = sortParts(matchingParts());
+  const mode = $('group-mode').value;
+  const grouped = mode !== 'flat' && !!state.analysis;
+  $('group-status').hidden = mode === 'flat' || grouped;
+  $('group-status').textContent = 'Grouping awaits analysis. Showing the flat inventory.';
   const fragment = document.createDocumentFragment();
-  const max = Math.max(1, ...state.context.categories.map((category) => category.tokens));
-  for (const part of parts.slice(0, state.rows)) {
-    const category = state.context.categories.find((category) => category.id === part.category);
-    const row = element('tr', 'part-row');
-    const label = element('td');
-    const open = element('button', 'part-open');
-    open.setAttribute('aria-label', `Inspect ${part.title}`);
-    const title = element('div', 'part-title');
-    const swatch = element('span', 'swatch');
-    swatch.style.backgroundColor = category.color;
-    title.append(swatch, element('span', '', part.title));
-    open.append(title, element('div', 'part-preview', part.preview || part.note || 'No readable text'));
-    open.addEventListener('click', () => inspect(part));
-    label.append(open);
-    const size = element('td', 'part-size', part.tokens == null ? 'Unknown' : `≈ ${number(part.tokens)}`);
-    const meter = element('div', 'size-meter');
-    const fill = element('span');
-    fill.style.width = `${Math.min(100, (part.tokens || 0) / max * 100)}%`;
-    fill.style.backgroundColor = category.color;
-    meter.append(fill); size.append(meter);
-    const arrow = element('td', 'part-arrow', '›');
-    arrow.setAttribute('aria-hidden', 'true');
-    row.append(label, size, element('td', '', percent(part.percent)), element('td', '', percent(part.window_percent)), arrow);
-    fragment.append(row);
+  let remaining = 0;
+  if (!grouped) {
+    fragment.append(...parts.slice(0, state.rows).map((part) => partRow(part)));
+    remaining = parts.length - state.rows;
+  } else {
+    const matching = new Set(parts.map((part) => part.id));
+    const groups = state.analysis.groups.filter((group) => group.mode === mode).map((group) => {
+      const members = group.part_ids.filter((id) => matching.has(id)).map((id) => state.partsById.get(id));
+      return { ...group, members, tokens: members.reduce((total, part) => total + (part.tokens || 0), 0),
+        unknown: members.filter((part) => part.tokens == null).length };
+    }).filter((group) => group.members.length);
+    const sort = $('sort').value;
+    groups.sort((a, b) => sort === 'largest' ? b.tokens - a.tokens || a.members[0].order - b.members[0].order
+      : sort === 'newest' ? b.members.at(-1).order - a.members.at(-1).order : a.members[0].order - b.members[0].order);
+    let budget = state.rows;
+    for (const group of groups) {
+      if (budget <= 0) { remaining++; continue; }
+      budget--;
+      const expanded = state.expanded.has(group.id);
+      const row = element('tr', 'group-row');
+      row.dataset.groupId = group.id;
+      const label = element('td');
+      const toggle = element('button', 'group-toggle', `${expanded ? '▾' : '▸'} ${group.label}`);
+      toggle.id = `group-toggle:${group.id}`;
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.title = `[${group.id}]`;
+      toggle.addEventListener('click', () => {
+        if (expanded) state.expanded.delete(group.id); else state.expanded.add(group.id);
+        renderParts(); $(toggle.id)?.focus();
+      });
+      label.append(toggle, element('div', 'tiny', `${group.members.length} matching parts${group.unknown ? ` · ${group.unknown} unmeasured` : ''}`));
+      const ids = [...new Set(group.members.map((part) => state.partUnits.get(part.id)?.id).filter(Boolean))];
+      if (ids.length) {
+        const actions = element('div', 'group-actions');
+        for (const [text, checked] of [['Select eligible', true], ['Deselect', false]]) {
+          const button = element('button', 'text-button', text);
+          button.setAttribute('aria-label', `${text} in ${group.label}`);
+          button.id = `group-${checked ? 'select' : 'clear'}:${group.id}`;
+          button.addEventListener('click', () => {
+            const skipped = ids.filter((id) => !state.unitsById.get(id).eligible).length;
+            changeSelection(ids, checked, `${checked ? 'Selected' : 'Deselected'} eligible units in ${group.label}. ${skipped} ineligible units skipped.`);
+          });
+          actions.append(button);
+        }
+        label.append(actions);
+      }
+      const share = (total) => total ? group.tokens / total * 100 : null;
+      row.append(label, element('td', 'part-size', `≈ ${number(group.tokens)}${group.unknown ? ' + ?' : ''}`),
+        element('td', '', percent(share(state.context.tokens))), element('td', '', percent(share(state.context.window))), element('td'));
+      fragment.append(row);
+      if (expanded) {
+        const members = sortParts(group.members);
+        fragment.append(...members.slice(0, budget).map((part) => partRow(part, true)));
+        remaining += Math.max(0, members.length - budget);
+        budget -= Math.min(budget, members.length);
+      }
+    }
   }
   $('parts').replaceChildren(fragment);
   $('filtered-count').textContent = `${parts.length} parts`;
   $('parts-empty').hidden = parts.length !== 0;
-  $('more-parts').hidden = parts.length <= state.rows;
-  $('more-parts').textContent = `Show more (${parts.length - state.rows} remaining)`;
+  $('more-parts').hidden = remaining <= 0;
+  $('more-parts').textContent = 'Show more inventory';
+  renderSelectionSummary();
+}
+
+function resetAnalysis(notice) {
+  state.analysisRequest++;
+  state.previewRequest++;
+  state.analysis = null;
+  state.analysisLoading = false;
+  state.analysisError = '';
+  state.unitsById.clear();
+  state.partUnits.clear();
+  state.expanded.clear();
+  state.evidenceExpanded.clear();
+  state.findingRows = 80;
+  state.selected.clear();
+  state.selectionNotice = notice;
+  state.preview = null;
+  state.previewLoading = false;
+  state.previewError = '';
+  renderFindings();
+  renderPreview();
+}
+
+async function loadAnalysis() {
+  const session = state.session;
+  const revision = state.context.revision;
+  const request = ++state.analysisRequest;
+  const current = () => request === state.analysisRequest && session === state.session && revision === state.context?.revision;
+  state.analysisLoading = true;
+  state.analysisError = '';
+  renderFindings();
+  try {
+    const params = new URLSearchParams({ revision });
+    const analysis = await api(`/api/sessions/${encodeURIComponent(session)}/analysis?${params}`);
+    if (!current()) return;
+    if (analysis.session_id !== session || analysis.revision !== revision) throw new Error('Analysis returned a different snapshot. Refresh to retry.');
+    state.analysis = analysis;
+    state.unitsById = new Map(analysis.units.map((unit) => [unit.id, unit]));
+    state.partUnits = new Map(analysis.units.flatMap((unit) => unit.part_ids.map((id) => [id, unit])));
+  } catch (error) {
+    if (!current()) return;
+    state.analysisError = `Analysis unavailable. ${error.message}`;
+  } finally {
+    if (current()) {
+      state.analysisLoading = false;
+      renderFindings(); renderParts(); renderPreview();
+    }
+  }
+}
+
+function renderFindings() {
+  $('analysis-status').textContent = state.analysisError || (state.analysisLoading ? 'Analyzing this snapshot…'
+    : state.analysis ? (state.analysis.findings.length ? 'Evidence refers to the full displayed snapshot.' : 'No repeated or large eligible tool results found.')
+      : 'Analysis will appear after the snapshot loads.');
+  $('analysis-status').classList.toggle('failed', !!state.analysisError);
+  const candidates = new Map();
+  for (const finding of state.analysis?.findings || []) {
+    if (!candidates.has(finding.unit_id)) candidates.set(finding.unit_id, []);
+    candidates.get(finding.unit_id).push(finding);
+  }
+  const units = (state.analysis?.units || []).filter((unit) => candidates.has(unit.id));
+  if ($('findings-sort').value === 'largest') units.sort((a, b) => b.tokens - a.tokens);
+  const total = units.reduce((tokens, unit) => tokens + unit.tokens, 0);
+  $('candidate-count').textContent = state.analysis ? String(units.length) : '—';
+  $('opportunity-total').textContent = state.analysis
+    ? `${units.length} unique candidate units · ≈ ${number(total)} tokens to review. Overlapping reasons count each unit once.` : '';
+  const fragment = document.createDocumentFragment();
+  for (const unit of units.slice(0, state.findingRows)) {
+    const card = element('article', 'candidate');
+    card.dataset.unitId = unit.id;
+    const heading = element('div', 'candidate-heading');
+    const label = element('div', 'candidate-label');
+    label.append(unitCheckbox(unit, `select-finding:${unit.id}`, unit.label), document.createTextNode(` ${unit.label}`),
+      element('span', 'technical technical-id', `[${unit.id}]`));
+    heading.append(label, element('span', 'candidate-size', `≈ ${number(unit.tokens)} tokens`));
+    card.append(heading);
+    for (const finding of candidates.get(unit.id)) card.append(element('span', 'reason-badge', ruleLabels[finding.rule]));
+    const details = element('details');
+    details.open = state.evidenceExpanded.has(unit.id);
+    details.append(element('summary', '', 'Reasons and evidence'));
+    details.addEventListener('toggle', () => {
+      if (details.open) state.evidenceExpanded.add(unit.id); else state.evidenceExpanded.delete(unit.id);
+    });
+    for (const finding of candidates.get(unit.id)) {
+      const evidence = element('div', 'evidence');
+      evidence.append(element('p', '', finding.reason));
+      const reference = state.unitsById.get(finding.reference_unit_id);
+      if (reference) evidence.append(element('p', 'muted', `Newest reference: ${reference.label} [${reference.id}]`));
+      const links = element('div', 'evidence-links');
+      for (const id of finding.evidence_part_ids) {
+        const part = state.partsById.get(id);
+        if (!part) continue;
+        const button = element('button', 'text-button', `${part.title} [${id}]`);
+        button.addEventListener('click', () => inspect(part));
+        links.append(button);
+      }
+      evidence.append(links); details.append(evidence);
+    }
+    card.append(details); fragment.append(card);
+  }
+  $('findings').replaceChildren(fragment);
+  $('more-findings').hidden = units.length <= state.findingRows;
+}
+
+function renderSelectionSummary() {
+  const members = new Set([...state.selected].flatMap((id) => state.unitsById.get(id)?.part_ids || []));
+  const matching = new Set(state.context ? matchingParts().map((part) => part.id) : []);
+  const hidden = [...members].filter((id) => !matching.has(id)).length;
+  $('selection-summary').textContent = `${state.selected.size} complete tool units · ${members.size} selected parts${hidden ? ` · ${hidden} paired parts outside the filter` : ''}.`;
+  $('selection-notice').textContent = state.selectionNotice;
+  $('clear-selection').disabled = state.selected.size === 0;
+  $('preview-selection').disabled = !state.analysis || state.previewLoading;
+}
+
+function changeSelection(ids, checked, notice = '') {
+  for (const id of ids) {
+    if (!state.unitsById.get(id)?.eligible) continue;
+    if (checked) state.selected.add(id); else state.selected.delete(id);
+  }
+  state.selectionNotice = notice;
+  const focus = document.activeElement?.id;
+  renderParts(); renderFindings();
+  if (focus) $(focus)?.focus();
+  requestPreview();
+}
+
+async function requestPreview() {
+  if (!state.analysis) return;
+  const session = state.session;
+  const revision = state.context.revision;
+  const request = ++state.previewRequest;
+  const current = () => request === state.previewRequest && session === state.session && revision === state.context?.revision;
+  state.preview = null;
+  state.previewError = '';
+  state.previewLoading = true;
+  renderPreview();
+  try {
+    const preview = await api(`/api/sessions/${encodeURIComponent(session)}/cleanup-preview`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ revision, unit_ids: [...state.selected] }),
+    });
+    if (!current()) return;
+    if (preview.session_id !== session || preview.revision !== revision) throw new Error('Preview returned a different snapshot. Refresh and reselect.');
+    state.preview = preview;
+  } catch (error) {
+    if (!current()) return;
+    state.previewError = error.message;
+  } finally {
+    if (current()) { state.previewLoading = false; renderPreview(); }
+  }
+}
+
+function renderPreview() {
+  renderSelectionSummary();
+  $('preview-status').textContent = state.previewError || (state.previewLoading ? 'Calculating selection…' : '');
+  $('preview-status').classList.toggle('failed', !!state.previewError);
+  const preview = state.preview;
+  const fragment = document.createDocumentFragment();
+  if (preview) {
+    for (const [label, tokens, caption] of [
+      ['Before', preview.before_visible_tokens, 'visible text tokens'],
+      ['Selected', preview.selected_estimated_tokens, `${percent(preview.selected_visible_percent)} of visible · ${percent(preview.selected_window_percent)} of window`],
+      ['Remaining', preview.after_visible_tokens, `${percent(preview.after_window_percent)} of window`],
+    ]) {
+      const card = element('div', 'preview-value');
+      card.append(element('span', '', label), element('strong', '', `≈ ${number(tokens)}`), element('span', '', caption));
+      fragment.append(card);
+    }
+  }
+  $('preview-values').replaceChildren(fragment);
+  $('preview-values').hidden = !preview;
+  $('preview-scope').textContent = preview
+    ? `${preview.tokenizer} · ${preview.unmeasured_parts} unmeasured parts remain. ${preview.window_tokens == null ? 'Model window unknown. ' : ''}Visible-text estimate only; provider-reported usage is unchanged.`
+    : 'Select complete tool units. Estimates cover visible text only; provider-reported usage stays separate.';
 }
 
 async function inspect(part) {
@@ -302,12 +587,17 @@ $('live').addEventListener('click', () => {
   $('live').setAttribute('aria-pressed', String(state.live));
   $('live').querySelector('span').textContent = state.live ? 'Live' : 'Paused';
   $('live').querySelector('.dot').classList.toggle('off', !state.live);
+  if (state.context) renderMetrics();
   if (state.live) refresh();
   schedule();
 });
 $('clear-filter').addEventListener('click', () => toggleCategory(state.category));
-for (const id of ['part-search', 'sort']) $(id).addEventListener('input', () => { state.rows = 80; renderParts(); });
+for (const id of ['part-search', 'sort', 'group-mode']) $(id).addEventListener('input', () => { state.rows = 80; renderParts(); });
 $('more-parts').addEventListener('click', () => { state.rows += 80; renderParts(); });
+$('findings-sort').addEventListener('input', () => { state.findingRows = 80; renderFindings(); });
+$('more-findings').addEventListener('click', () => { state.findingRows += 80; renderFindings(); });
+$('clear-selection').addEventListener('click', () => changeSelection([...state.selected], false, 'Selection cleared.'));
+$('preview-selection').addEventListener('click', requestPreview);
 $('detail-close').addEventListener('click', () => $('inspector').close());
 $('inspector').addEventListener('close', () => { state.detailRequest++; });
 $('settings-open').addEventListener('click', () => $('settings-dialog').showModal());
