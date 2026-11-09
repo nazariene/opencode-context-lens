@@ -9,3 +9,8 @@ host: 127.0.0.1
 port: 9193
 refresh_seconds: 5
 request_timeout_seconds: 30
+
+# In-memory observed history; pins and runtime controls have independent limits.
+history_sessions: 8                    # 1–64
+history_snapshots_per_session: 32      # 2–256
+history_max_bytes: 67108864            # 1 MiB–512 MiB; accounted payload, not total heap

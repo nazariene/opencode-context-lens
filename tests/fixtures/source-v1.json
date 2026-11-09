@@ -1,0 +1,19 @@
+{
+  "session": {
+    "id": "ses_contract",
+    "title": "Fictional source contract",
+    "location": {"directory": "/workspace/fictional"},
+    "model": {"providerID": "fictional", "id": "text", "variant": "default"}
+  },
+  "messages": [
+    {"id": "msg_user", "type": "user", "text": "Review café and 😀 output.", "time": {"created": 100}},
+    {"id": "msg_tool", "type": "assistant", "time": {"created": 101}, "content": [
+      {"type": "text", "text": "Original explanation."},
+      {"type": "tool", "id": "call_α", "name": "read", "executed": false, "state": {
+        "status": "completed",
+        "input": {"path": "src/fictional.py", "😀": 0.0000001, "é": -0.0, "a": 9007199254740991},
+        "content": [{"type": "text", "text": "first\r\n"}, {"type": "text", "text": "second\n"}]
+      }}
+    ]}
+  ]
+}

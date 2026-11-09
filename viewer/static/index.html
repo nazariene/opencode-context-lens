@@ -8,6 +8,9 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%230d1118'/%3E%3Ccircle cx='20' cy='20' r='11' fill='none' stroke='%2345d4ba' stroke-width='5'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
+  <script src="/static/review.js" defer></script>
+  <script src="/static/summary.js" defer></script>
+  <script src="/static/pruning.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -28,6 +31,41 @@
       <section class="page-heading"><div><div class="eyebrow">CONTEXT EXPLORER</div><h1 id="session-title"></h1><div class="session-meta"><span id="model-name" class="model-chip"></span><span id="session-directory"></span></div><div id="session-id" class="technical"></div></div><span class="read-only">◌ Read-only view</span></section>
       <p id="snapshot-age" class="snapshot-age muted"></p>
 
+      <section class="panel review-panel" aria-label="Context history">
+        <div class="section-title"><div><h2>Context timeline</h2><p>Snapshots observed during this dashboard run.</p></div><button id="return-live" class="action-button" hidden>Return to live context</button></div>
+        <p id="history-status" class="tiny" role="status"></p><p id="view-status" class="analysis-status" role="status"></p>
+        <svg id="history-chart" viewBox="0 0 800 110" role="img" aria-label="Observed visible-token growth"></svg>
+        <div class="inventory-scroll"><table class="history-table"><thead><tr><th>OBSERVED</th><th>KNOWN TOKENS</th><th>CHANGE</th><th>UNKNOWN</th><th></th></tr></thead><tbody id="history-rows"></tbody></table></div>
+        <div class="review-actions"><label>Before <select id="diff-before" aria-label="Before snapshot"></select></label><label>After <select id="diff-after" aria-label="After snapshot"></select></label><button id="compare-snapshots" class="action-button" disabled>Compare snapshots</button></div>
+        <details><summary>Lens control events</summary><p id="control-event-loss" class="tiny"></p><div id="control-events"></div></details>
+      </section>
+      <section id="pruning-panel" class="panel review-panel" aria-label="Manual context pruning">
+        <div class="section-title"><div><h2>Manual context pruning <span class="badge">PERSISTENT</span></h2><p>Edit the next request's effective context. Original history remains available.</p></div></div>
+        <p id="pruning-status" class="analysis-status" role="status"></p><p id="pruning-evidence" class="tiny"></p>
+        <div class="review-actions"><label>Action <select id="pruning-action" aria-label="Pruning action"><option value="prune-result">Prune tool output</option><option value="remove-reasoning">Remove reasoning</option><option value="delete-invocation">Delete complete invocation</option><option value="delete-range">Remove conversation range</option><option value="summarize-brief">Summarize range · brief</option><option value="summarize-full">Summarize range · full</option></select></label><input id="pruning-search" type="search" placeholder="Filter pruning items…" aria-label="Filter pruning items"><button id="pruning-all" class="action-button">Select all eligible</button><button id="pruning-matching" class="text-button">Select matching</button><button id="pruning-clear" class="text-button">Clear</button></div>
+        <div id="pruning-range" class="review-actions" hidden><label>First message <select id="pruning-first" aria-label="First range message"></select></label><label>Last message <select id="pruning-last" aria-label="Last range message"></select></label><span class="tiny">Inclusive boundaries; unsupported or protected content rejects the whole range. Summaries use the current session model.</span></div>
+        <div id="pruning-large-controls" class="review-actions"><label>Large call minimum bytes <input id="pruning-min-bytes" type="number" min="0" step="1024" value="16384"></label><button id="pruning-large" class="text-button">Select large matching calls</button><span class="tiny">Arguments + output, UTF-8 bytes; includes unrendered matches.</span></div>
+        <p id="pruning-selection" class="tiny" role="status"></p>
+        <div id="pruning-items" class="pruning-items"></div><button id="pruning-more" class="load-more" hidden>Show more pruning items</button>
+        <div class="review-actions"><button id="pruning-preview" class="action-button" disabled>Preview pruning</button><button id="pruning-apply" class="action-button" disabled>Apply reviewed pruning</button></div>
+        <p id="pruning-message" class="analysis-status" role="status"></p><div id="pruning-review"></div>
+        <details><summary>Saved edits and restoration</summary><div id="pruning-edits"></div></details>
+        <p class="tiny">Items show original → Lens-projected previews. Main inventory and metrics show original API context. Delete includes associated reasoning, listed before Apply. Saved edits survive restarts and reset after successful native compaction. Failed compaction keeps them. Retained recent content follows native context rules. Disabling the plugin ignores saved edits.</p>
+      </section>
+      <section id="summary-panel" class="panel review-panel" aria-label="Summary replacement">
+        <div class="section-title"><div><h2>Summary replacement</h2><p>Review complete tool invocations, then explicitly activate their summaries.</p></div></div>
+        <p id="replacement-status" class="analysis-status" role="status"></p><p id="replacement-projection" class="tiny"></p><div id="replacement-list"></div>
+        <div id="summary-actions" class="review-actions"><button id="manual-summary" class="action-button">Write summaries</button><label>Generation model <select id="summary-model" aria-label="Summary generation model"></select></label><button id="generate-summary" class="action-button">Generate draft</button></div>
+        <p id="draft-status" class="analysis-status" role="status"></p><div id="summary-editor"></div>
+        <div id="draft-actions" class="review-actions" hidden><button id="save-summary" class="action-button">Save edits</button><button id="preview-summary" class="action-button">Preview summaries</button><button id="activate-summary" class="action-button" disabled>Activate reviewed summaries</button><button id="discard-summary" class="text-button">Discard / cancel generation</button></div>
+        <p id="summary-preview" class="tiny"></p><p class="tiny">Original history is retained. Registrations affect subsequent primary requests; hook observations are not provider-savings measurements. Leases expire within 45 seconds without dashboard renewal.</p>
+      </section>
+      <section id="diff-panel" class="panel review-panel" aria-label="Context differences" hidden>
+        <div class="section-title"><h2>Context diff</h2><span id="diff-summary" class="tiny"></span></div>
+        <p id="diff-basis" class="tiny"></p><div class="review-actions"><select id="diff-class" aria-label="Diff classification"><option value="">All changes</option value="added">Added</option><option value="removed">Removed</option><option value="changed">Changed</option><option value="unchanged">Unchanged</option></select><select id="diff-category" aria-label="Diff category"><option value="">All categories</option></select><input id="diff-search" type="search" placeholder="Filter titles and previews" aria-label="Filter diff text"></div>
+        <p id="diff-status" class="analysis-status" role="status"></p><div id="diff-rows"></div><button id="diff-more" class="load-more" hidden>Show more differences</button>
+      </section>
+
       <section class="metrics" aria-label="Context metrics">
         <article class="metric primary"><div class="metric-label">Visible context <span class="badge">ESTIMATED</span></div><div class="metric-value" id="visible-tokens">—</div><div class="metric-foot"><span id="visible-window">—</span><span>tokens</span></div><div class="capacity-track"><div id="visible-bar"></div></div></article>
         <article class="metric"><div class="metric-label">Last request input <span class="badge reported">REPORTED</span></div><div class="metric-value" id="reported-tokens">—</div><div class="metric-foot" id="reported-caption">No completed request yet</div><div class="tiny" id="reported-cache"></div></article>
@@ -42,6 +80,8 @@
       <section class="panel preview-panel" aria-label="Cleanup preview"><div class="section-title"><div><h2>Cleanup preview <span class="badge">HYPOTHETICAL</span></h2><p>Hypothetical — no context changed</p></div><div class="preview-actions"><button id="clear-selection" class="text-button" disabled>Clear selection</button><button id="preview-selection" class="action-button" disabled>Preview selection</button></div></div><p id="selection-summary" class="selection-summary">No tool units selected.</p><p id="selection-notice" class="tiny" role="status"></p><div id="preview-status" class="analysis-status" role="status"></div><div id="preview-values" class="preview-values"></div><p id="preview-scope" class="tiny">Select complete tool units below. Estimates cover visible text only; provider-reported usage stays separate.</p></section>
 
       <section class="panel parts-panel"><div class="section-title"><div><h2>Context inventory <span id="filtered-count" class="count"></span></h2><p>Active messages after the latest compaction. Selection includes complete tool calls.</p></div><div class="inventory-controls"><select id="group-mode" aria-label="Group context parts"><option value="flat">Flat inventory</option><option value="tool">By tool</option><option value="resource">By resource</option><option value="turn">By retained turn</option></select><label class="search"><span aria-hidden="true">⌕</span><input id="part-search" type="search" placeholder="Filter visible previews…" aria-label="Filter context parts by title or preview"></label><select id="sort" aria-label="Sort context parts"><option value="largest">Largest first</option><option value="oldest">Context order</option><option value="newest">Newest first</option></select></div></div>
+        <div id="bulk-controls" class="review-actions bulk-controls"><button id="select-all-tools" class="action-button">Select all tool calls and results</button><button id="select-matching-tools" class="text-button">Select matching tool calls and results</button><span id="bulk-state" class="tiny" role="status"></span></div>
+        <details id="pins-panel" class="pins-panel"><summary>Pinned context <span id="pin-count" class="count">0</span></summary><p class="tiny">Run-only protection for Context Lens actions. Native compaction and other clients remain independently controlled.</p><p id="pin-status" class="tiny" role="status"></p><div id="pin-list"></div></details>
         <p id="group-status" class="group-status tiny" role="status" hidden></p>
         <div class="inventory-scroll"><table><thead><tr><th>CONTEXT PART</th><th>SIZE <span title="Estimated tokens">≈</span></th><th>% VISIBLE</th><th>% WINDOW</th><th></th></tr></thead><tbody id="parts"></tbody></table></div><div id="parts-empty" class="empty" hidden>No parts match this filter.</div><button id="more-parts" class="load-more" hidden>Show more parts</button>
       </section>

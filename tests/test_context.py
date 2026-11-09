@@ -36,10 +36,11 @@ def test_provider_usage_is_latest_completed_input_including_cache_not_cumulative
     assert [part["tokens"] for part in context["parts"]] == [3, 2]
 
 
-def test_media_and_encrypted_reasoning_do_not_become_text_tokens():
+@pytest.mark.parametrize("field", ["state", "native"])
+def test_media_and_encrypted_reasoning_do_not_become_text_tokens(field):
     messages = [message("user", text="Look", files=[{"name": "photo.png", "mime": "image/png", "data": "base64" * 500}]),
                 message("assistant", "msg_reply", content=[{"type": "reasoning", "text": "",
-                    "state": {"reasoningEncryptedContent": "ciphertext" * 500}}])]
+                    field: {"reasoningEncryptedContent": "ciphertext" * 500}}])]
     context = build_context(SESSION, messages, MODEL, Counter())
     assert context["tokens"] == 1
     assert context["unknown_count"] == 2
@@ -49,8 +50,9 @@ def test_media_and_encrypted_reasoning_do_not_become_text_tokens():
     assert context["parts"][1]["percent"] is None
 
 
-def test_compaction_checkpoint_and_post_compaction_content_only():
-    messages = [message("compaction", status="completed", summary="Prior summary", recent="Recent record"),
+@pytest.mark.parametrize("retained", [{"recent": "Recent record"}, {"metadata": {"recent": "Recent record"}}])
+def test_compaction_checkpoint_and_post_compaction_content_only(retained):
+    messages = [message("compaction", status="completed", summary="Prior summary", **retained),
                 message("user", "msg_new", text="Continue here"),
                 message("model-switched", "msg_control", model=SESSION["model"]),
                 message("idle", "msg_idle"),
@@ -107,7 +109,7 @@ def test_tokenizer_fallback_is_labeled_and_counts_unicode_bytes(monkeypatch):
     assert counter.count("") == 0
 
 
-@pytest.mark.parametrize("extra", [{"providerContext": {"messages": ["opaque"]}}, {}])
+@pytest.mark.parametrize("extra", [{"providerContext": {"messages": ["opaque"]}}, {"native": {"messages": ["opaque"]}}, {}])
 def test_native_checkpoint_is_unknown_not_serialized_as_measured_text(extra):
     context = build_context(SESSION, [message("compaction", status="completed", summary="Summary", recent="", **extra)], MODEL, Counter())
     assert context["tokens"] == 1

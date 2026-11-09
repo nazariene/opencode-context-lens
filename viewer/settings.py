@@ -14,6 +14,9 @@ class Settings:
     port: int = 9193
     refresh_seconds: float = 5
     request_timeout_seconds: float = 30
+    history_sessions: int = 8
+    history_snapshots_per_session: int = 32
+    history_max_bytes: int = 64 * 1024 * 1024
 
 
 def load_settings(path: Path) -> Settings:
@@ -37,6 +40,12 @@ def load_settings(path: Path) -> Settings:
         raise ValueError("host must not be empty")
     if type(settings.port) is not int or not 1 <= settings.port <= 65535:
         raise ValueError("port must be an integer between 1 and 65535")
+    for name, minimum, maximum in (("history_sessions", 1, 64),
+                                   ("history_snapshots_per_session", 2, 256),
+                                   ("history_max_bytes", 1048576, 536870912)):
+        value = getattr(settings, name)
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be an integer between {minimum} and {maximum}")
     for name, minimum in (("refresh_seconds", 2), ("request_timeout_seconds", 1)):
         value = getattr(settings, name)
         if type(value) not in (int, float) or not minimum <= value <= 300:

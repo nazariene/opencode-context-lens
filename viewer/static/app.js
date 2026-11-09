@@ -100,6 +100,7 @@ async function loadSessions(append = false, retain = false) {
 async function selectSession(id) {
   if (id === state.session && state.context) return;
   resetAnalysis(state.session && id !== state.session ? 'Session changed. Selection cleared.' : '');
+  resetReview();
   state.session = id;
   state.context = null;
   state.category = null;
@@ -133,8 +134,25 @@ async function loadContext() {
     throw error;
   }
   if (session !== state.session || request !== state.contextRequest) return;
+  if (review.runId && context.run_id !== review.runId) {
+    resetReview();
+    resetAnalysis('Dashboard restarted. Run-only history, pins, and selection were reset.');
+    state.detailRequest++;
+    $('inspector').close();
+  }
+  review.runId = context.run_id;
+  review.liveContext = context;
+  if (review.mode !== 'live') {
+    await loadHistory();
+    renderViewStatus();
+    return;
+  }
   const changed = context.revision !== state.context?.revision;
-  if (changed) resetAnalysis(state.context ? 'Snapshot changed. Selection cleared; review the new context.' : state.selectionNotice);
+  if (changed) {
+    pruning.selected.clear(); invalidatePruning('Original context changed. Review pruning again.');
+    resetAnalysis(state.context ? 'Snapshot changed. Selection cleared; review the new context.' : state.selectionNotice);
+    invalidateSummary('Original context changed. Review a new selection.');
+  }
   state.context = context;
   state.partsById = new Map(context.parts.map((part) => [part.id, part]));
   connected();
@@ -151,6 +169,8 @@ async function loadContext() {
     }
   }
   if (!state.analysis && !state.analysisLoading) await loadAnalysis();
+  await Promise.all([loadHistory(), loadPins(), loadReplacements(), loadPruning()]);
+  await pollDraft();
 }
 
 function renderMetrics() {
@@ -241,10 +261,10 @@ function unitCheckbox(unit, id, label) {
   const checkbox = element('input');
   checkbox.type = 'checkbox';
   checkbox.id = id;
-  checkbox.disabled = !unit?.eligible;
+  checkbox.disabled = !unit?.eligible || unit?.pinned || review.mode !== 'live';
   checkbox.checked = !!unit && state.selected.has(unit.id);
   checkbox.setAttribute('aria-label', `Select ${label}`);
-  wrapper.title = unit ? (unit.eligible ? `Complete tool invocation [${unit.id}]` : blockedLabels[unit.blocked_reason]) : 'Not a selectable tool invocation';
+  wrapper.title = unit ? (unit.pinned ? 'Pinned complete tool invocation' : unit.eligible ? `Complete tool invocation [${unit.id}]` : blockedLabels[unit.blocked_reason]) : 'Not a selectable tool invocation';
   checkbox.addEventListener('change', () => changeSelection([unit.id], checkbox.checked));
   wrapper.append(checkbox);
   return wrapper;
@@ -268,7 +288,9 @@ function partRow(part, grouped = false) {
   open.append(title, element('div', 'part-preview', part.preview || part.note || 'No readable text'));
   if (unit && !unit.eligible) open.append(element('div', 'blocked-reason', blockedLabels[unit.blocked_reason]));
   open.addEventListener('click', () => inspect(part));
-  content.append(open); label.append(content);
+  content.append(open);
+  if (review.mode === 'live') content.append(pinButton(part));
+  label.append(content);
   const size = element('td', 'part-size', part.tokens == null ? 'Unknown' : `≈ ${number(part.tokens)}`);
   const meter = element('div', 'size-meter');
   const fill = element('span');
@@ -322,15 +344,14 @@ function renderParts() {
       });
       label.append(toggle, element('div', 'tiny', `${group.members.length} matching parts${group.unknown ? ` · ${group.unknown} unmeasured` : ''}`));
       const ids = [...new Set(group.members.map((part) => state.partUnits.get(part.id)?.id).filter(Boolean))];
-      if (ids.length) {
+      if (ids.length && review.mode === 'live') {
         const actions = element('div', 'group-actions');
         for (const [text, checked] of [['Select eligible', true], ['Deselect', false]]) {
           const button = element('button', 'text-button', text);
           button.setAttribute('aria-label', `${text} in ${group.label}`);
           button.id = `group-${checked ? 'select' : 'clear'}:${group.id}`;
           button.addEventListener('click', () => {
-            const skipped = ids.filter((id) => !state.unitsById.get(id).eligible).length;
-            changeSelection(ids, checked, `${checked ? 'Selected' : 'Deselected'} eligible units in ${group.label}. ${skipped} ineligible units skipped.`);
+            changeSelection(ids, checked, selectionNotice(ids, group.label, checked));
           });
           actions.append(button);
         }
@@ -389,6 +410,10 @@ async function loadAnalysis() {
     const analysis = await api(`/api/sessions/${encodeURIComponent(session)}/analysis?${params}`);
     if (!current()) return;
     if (analysis.session_id !== session || analysis.revision !== revision) throw new Error('Analysis returned a different snapshot. Refresh to retry.');
+    if (review.pinState && analysis.pin_version < review.pinState.pin_version) {
+      const protectedIds = new Set(review.pinState.pins.map((pin) => pin.unit_id));
+      for (const unit of analysis.units) { unit.pinned = protectedIds.has(unit.id); unit.selectable = unit.eligible && !unit.pinned; }
+    }
     state.analysis = analysis;
     state.unitsById = new Map(analysis.units.map((unit) => [unit.id, unit]));
     state.partUnits = new Map(analysis.units.flatMap((unit) => unit.part_ids.map((id) => [id, unit])));
@@ -464,15 +489,20 @@ function renderSelectionSummary() {
   $('selection-summary').textContent = `${state.selected.size} complete tool units · ${members.size} selected parts${hidden ? ` · ${hidden} paired parts outside the filter` : ''}.`;
   $('selection-notice').textContent = state.selectionNotice;
   $('clear-selection').disabled = state.selected.size === 0;
-  $('preview-selection').disabled = !state.analysis || state.previewLoading;
+  $('preview-selection').disabled = !state.analysis || state.previewLoading || review.mode !== 'live';
+  renderBulkState();
+  renderSummaryActions();
 }
 
 function changeSelection(ids, checked, notice = '') {
+  if (review.mode !== 'live') return;
+  const before = summarySelection();
   for (const id of ids) {
-    if (!state.unitsById.get(id)?.eligible) continue;
+    if (checked && (!state.unitsById.get(id)?.eligible || state.unitsById.get(id)?.pinned)) continue;
     if (checked) state.selected.add(id); else state.selected.delete(id);
   }
   state.selectionNotice = notice;
+  if (before !== summarySelection()) invalidateSummary('Selection changed. Review a new draft.');
   const focus = document.activeElement?.id;
   renderParts(); renderFindings();
   if (focus) $(focus)?.focus();
@@ -480,11 +510,13 @@ function changeSelection(ids, checked, notice = '') {
 }
 
 async function requestPreview() {
-  if (!state.analysis) return;
+  if (!state.analysis || review.mode !== 'live') return;
   const session = state.session;
   const revision = state.context.revision;
+  const run = review.runId, pinVersion = review.pinState?.pin_version;
   const request = ++state.previewRequest;
-  const current = () => request === state.previewRequest && session === state.session && revision === state.context?.revision;
+  const current = () => request === state.previewRequest && session === state.session && revision === state.context?.revision
+    && run === review.runId && pinVersion === review.pinState?.pin_version && review.mode === 'live';
   state.preview = null;
   state.previewError = '';
   state.previewLoading = true;
@@ -496,6 +528,7 @@ async function requestPreview() {
     });
     if (!current()) return;
     if (preview.session_id !== session || preview.revision !== revision) throw new Error('Preview returned a different snapshot. Refresh and reselect.');
+    if (preview.run_id !== run || preview.pin_version !== pinVersion) { await loadPins(); return; }
     state.preview = preview;
   } catch (error) {
     if (!current()) return;
@@ -529,13 +562,12 @@ function renderPreview() {
     : 'Select complete tool units. Estimates cover visible text only; provider-reported usage stays separate.';
 }
 
-async function inspect(part) {
+async function inspect(part, context = state.context) {
   const request = ++state.detailRequest;
-  const context = state.context;
   state.detail = null;
   $('detail-title').textContent = part.title;
   $('detail-category').textContent = context.categories.find((category) => category.id === part.category).name;
-  $('detail-id').textContent = `[${part.message_id}]`;
+  $('detail-id').textContent = `[${part.message_id}]${context.snapshot_id ? ` · [${context.snapshot_id}] · Observed ${new Date(context.observation.first_observed).toLocaleString()}` : ''}`;
   $('detail-note').hidden = !part.note;
   $('detail-note').textContent = part.note || '';
   $('detail-stats').replaceChildren(...[`${part.tokens == null ? 'Unknown' : `≈ ${number(part.tokens)}`} tokens`, `${percent(part.percent)} of visible`, `${percent(part.window_percent)} of window`, `${number(part.bytes)} text bytes`].map((text) => element('span', '', text)));
@@ -545,7 +577,12 @@ async function inspect(part) {
   $('inspector').showModal();
   try {
     const params = new URLSearchParams({ id: part.id, revision: context.revision });
-    const detail = await api(`/api/sessions/${encodeURIComponent(state.session)}/part?${params}`);
+    let path = `/api/sessions/${encodeURIComponent(state.session)}/part`;
+    if (context.snapshot_id) {
+      path = `/api/sessions/${encodeURIComponent(state.session)}/history/${encodeURIComponent(context.snapshot_id)}/part`;
+      params.set('run_id', context.run_id);
+    }
+    const detail = await api(`${path}?${params}`);
     if (request !== state.detailRequest) return;
     state.detail = detail;
     $('detail-text').textContent = detail.text || '(No readable text)';
@@ -566,6 +603,7 @@ function schedule() {
   clearTimeout(state.timer);
   state.timer = setTimeout(async () => {
     if (state.live && !document.hidden && !$('refresh').disabled) await refresh();
+    else if (!document.hidden && state.context && !$('refresh').disabled) await Promise.allSettled([loadPins(), loadReplacements(), pollDraft(), loadPruning()]);
     schedule();
   }, state.interval);
 }
@@ -626,4 +664,3 @@ async function start() {
   }
   schedule();
 }
-start();

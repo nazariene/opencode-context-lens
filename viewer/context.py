@@ -6,6 +6,8 @@ from functools import lru_cache
 
 import tiktoken
 
+from .identity import identify_parts
+
 CATEGORIES = {
     "user": ("Your messages", "#7c9cff"),
     "assistant": ("Assistant replies", "#a78bfa"),
@@ -96,7 +98,7 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
                 content_type = content.get("type")
                 if content_type in ("text", "reasoning"):
                     category = "assistant" if content_type == "text" else "reasoning"
-                    state = content.get("state") or {}
+                    state = content.get("native") or content.get("state") or {}
                     hidden = content_type == "reasoning" and bool(state.get("reasoningEncryptedContent"))
                     opaque += int(hidden)
                     add(message, suffix, category, "Assistant reply" if category == "assistant" else "Visible reasoning",
@@ -137,8 +139,8 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
                 excluded["unfinished compaction"] += 1
                 continue
             add(message, "summary", "compaction", "Compaction summary", message.get("summary"))
-            add(message, "recent", "compaction", "Retained recent context", message.get("recent"))
-            if message.get("providerContext"):
+            add(message, "recent", "compaction", "Retained recent context", (message.get("metadata") or {}).get("recent", message.get("recent")))
+            if message.get("native") is not None or message.get("providerContext"):
                 opaque += 1
                 add(message, "provider", "compaction", "Provider-native checkpoint", "Provider-specific context retained",
                     "The provider-native checkpoint may replace the readable summary. Its token size is unknown.", True)
@@ -188,9 +190,11 @@ def build_context(session: dict, messages: list[dict], model: dict | None, count
                     "percent": percentage(input_tokens, limit) if same_model else None,
                     "message_id": latest["id"], "model": model_ref, "same_model": same_model,
                     "completed": latest["time"]["completed"]}
+    identify_parts(session["id"], messages, parts, provenance)
     revision_input = {
         "parts": [{key: value for key, value in part.items() if key != "created"} for part in parts],
         "provenance": provenance, "ruleset": ANALYSIS_RULESET, "tokenizer": counter.method, "window": limit,
+        "model": session.get("model"),
     }
     revision = hashlib.sha256(serialized(revision_input).encode()).hexdigest()[:16]
     return {
